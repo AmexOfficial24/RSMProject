@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 16
 VisualStudioVersion = 16.0.31410.357
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "PythonApplication2", "PythonApplication2.pyproj", "{47AE117D-D5D9-4C73-9CC3-002E9928B501}"
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "RSMDataProject", "RSMDataProject.pyproj", "{47AE117D-D5D9-4C73-9CC3-002E9928B501}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
