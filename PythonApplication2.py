@@ -5,6 +5,7 @@ from typing import Dict, Any
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os # Module to handle file paths and extensions
+# import numpy as np # Added for potential advanced trend fitting (commented out for simplicity)
 
 # --- 1. CORE DATA ANALYSIS FUNCTION ---
 
@@ -48,11 +49,8 @@ def run_rms_analysis(hires_file_path: str, weather_file_path: str) -> Dict[str, 
         df_hires = load_data(
             hires_file_path,
             timestamp_col='timestamp',
-            # Load 'hires' column as float initially to handle any non-numeric entries without crashing.
             dtype={'station_id': str, 'hires': float} 
         )
-        # Convert 'hires' to a proper integer type (Int64) after loading, 
-        # using 'coerce' to turn invalid values into NaN (missing data).
         df_hires['hires'] = pd.to_numeric(df_hires['hires'], errors='coerce').astype('Int64')
 
         # 1.2 Load weather data
@@ -68,13 +66,12 @@ def run_rms_analysis(hires_file_path: str, weather_file_path: str) -> Dict[str, 
         df_weather['conditions'] = df_weather['conditions'].astype(str).str.strip()
 
     except Exception as e:
-        # If loading fails (e.g., file not found, wrong column name), raise a clear error.
         raise Exception(f"Error loading files. Check file format, column names, or installation of 'openpyxl' (for Excel). Details: {e}")
 
 
     # --- 2. Data Cleaning and Preprocessing ---
     
-    # 2.1 Outlier Filtering (Temperature): Remove unrealistically cold or hot temperatures (e.g., -50°C or 50°C is usually a data error).
+    # 2.1 Outlier Filtering (Temperature)
     initial_weather_rows = len(df_weather)
     df_weather = df_weather[
         (df_weather['temp_c'] >= -50) & 
@@ -82,19 +79,14 @@ def run_rms_analysis(hires_file_path: str, weather_file_path: str) -> Dict[str, 
     ]
     cleaned_weather_rows = len(df_weather)
     
-    # Check if any rows were dropped. (The original code includes a print statement here, useful for debugging).
     if initial_weather_rows != cleaned_weather_rows:
         print(f"WARNING: Dropped {initial_weather_rows - cleaned_weather_rows} rows from weather data due to unrealistic temperature values.")
         
     # 2.2 Handle Missing Values (NaN)
-    # Remove any rows from hires data where 'hires' is missing (NaN).
     df_hires.dropna(subset=['hires'], inplace=True)
-    # Remove any rows from weather data where 'temp_c' is missing (NaN).
     df_weather.dropna(subset=['temp_c'], inplace=True)
 
     # 2.3 Normalize Timestamps
-    # 'dt.floor('H')' rounds the time down to the nearest hour (e.g., 10:15:30 becomes 10:00:00).
-    # This is critical for merging, ensuring both files align perfectly on the hour.
     df_hires['timestamp'] = df_hires['timestamp'].dt.floor('H')
     df_weather['timestamp'] = df_weather['timestamp'].dt.floor('H')
 
@@ -103,45 +95,41 @@ def run_rms_analysis(hires_file_path: str, weather_file_path: str) -> Dict[str, 
     df_weather.drop_duplicates(subset=['timestamp'], inplace=True)
 
     # --- 3. Merge DataFrames ---
-    # Merge the hires and weather data based on the normalized 'timestamp' column.
-    # 'how=inner' ensures we only keep records that exist in *both* files at the same hour.
     df_merged = pd.merge(df_hires, df_weather, on='timestamp', how='inner')
     
     if df_merged.empty:
         raise Exception("Merged DataFrame is empty. Ensure 'timestamp' columns match exactly (same hour/minute) in both files.")
 
     # --- 4. Feature Engineering ---
-    # Create new, helpful columns from the timestamp for easy grouping later.
-    df_merged['day_of_week'] = df_merged['timestamp'].dt.day_name() # e.g., 'Monday', 'Tuesday'
-    df_merged['hour_of_day'] = df_merged['timestamp'].dt.hour       # e.g., 0 (midnight) to 23 (11 PM)
-    df_merged['date'] = df_merged['timestamp'].dt.date             # Just the date part, used for daily totals
-
+    df_merged['day_of_week'] = df_merged['timestamp'].dt.day_name() 
+    df_merged['hour_of_day'] = df_merged['timestamp'].dt.hour       
+    df_merged['date'] = df_merged['timestamp'].dt.date             
 
     # --- 5. Analysis and Aggregation ---
 
     # 5.1 Peak Day Analysis (Total Hires)
-    # Calculate the total hires for each day.
     daily_demand = df_merged.groupby('date')['hires'].sum().reset_index()
     daily_demand['day_of_week'] = pd.to_datetime(daily_demand['date']).dt.day_name()
-    
-    # Define the correct order for days (Monday to Sunday) for presentation/charting.
     day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    # Summarize total hires by day of the week, ensuring all days are present (fillna(0)).
     peak_day_summary = daily_demand.groupby('day_of_week')['hires'].sum().reindex(day_order).fillna(0).reset_index()
-    # Find the day with the maximum total hires.
     peak_day_result = peak_day_summary.loc[peak_day_summary['hires'].idxmax()]
     
     # 5.2 Peak Hour Analysis (Average Hires)
-    # Calculate the average hires for each hour of the day across the entire dataset.
     peak_hour_summary = df_merged.groupby('hour_of_day')['hires'].mean().reset_index()
-    # Find the hour with the maximum average hires.
     peak_hour_result = peak_hour_summary.loc[peak_hour_summary['hires'].idxmax()]
 
     # 5.3 Weather Correlation (Average Hires per Condition)
-    # Calculate the average hires for each unique weather condition (e.g., 'Sunny', 'Drizzle').
     weather_demand = df_merged.groupby('conditions')['hires'].mean().reset_index().sort_values(by='hires', ascending=False)
-    # The first row is the condition with the highest average hires.
     best_condition_result = weather_demand.iloc[0]
+
+    # **5.4 NEW: Temperature Correlation Analysis**
+    # Round temperature to the nearest integer for aggregation
+    df_merged['temp_rounded'] = df_merged['temp_c'].round().astype(int)
+    # Calculate the average hires for each rounded temperature.
+    temp_demand = df_merged.groupby('temp_rounded')['hires'].mean().reset_index()
+    # Find the temperature with the maximum average hires.
+    peak_temp_result = temp_demand.loc[temp_demand['hires'].idxmax()]
+
 
     # --- 6. Compile Results ---
     # Package all results and aggregated data into a single dictionary for the GUI.
@@ -153,58 +141,69 @@ def run_rms_analysis(hires_file_path: str, weather_file_path: str) -> Dict[str, 
         'best_condition': best_condition_result['conditions'],
         'best_condition_avg': best_condition_result['hires'],
         'weather_demand': weather_demand.to_dict('records'),
+        # NEW Temperature results
+        'peak_temp': int(peak_temp_result['temp_rounded']),
+        'peak_temp_avg': peak_temp_result['hires'],
         # DataFrames needed for Matplotlib charts:
         'chart_data_day': peak_day_summary,
-        'chart_data_hour': peak_hour_summary
+        'chart_data_hour': peak_hour_summary,
+        'chart_data_temp': temp_demand # NEW: Data for the temperature chart
     }
     
     return results
 
-# --- 2. CHARTING FUNCTION ---
+# --- 2. CHARTING FUNCTION (Revised for 3 Charts) ---
 
 def create_charts(results: Dict[str, Any], chart_frame: tk.Frame):
     """
-    Generates and embeds Matplotlib charts (bar graphs) into the provided Tkinter frame.
-    This creates the visual representation of the analysis results.
+    Generates and embeds Matplotlib charts (Day, Hour, and Temperature) into the provided Tkinter frame.
     """
     # Clear any previous charts from the frame before drawing new ones.
     for widget in chart_frame.winfo_children():
         widget.destroy()
 
-    # --- Chart 1: Average Hires by Hour of Day ---
-    # fig1 is the entire figure (the canvas), ax1 is the plot area (axes).
-    fig1, ax1 = plt.subplots(figsize=(6, 4))
-    
-    hour_data = results['chart_data_hour']
-    ax1.bar(hour_data['hour_of_day'], hour_data['hires'], color='#007BFF')
-    
-    ax1.set_title('Average Hires by Hour of Day', fontsize=12)
-    ax1.set_xlabel('Hour (0-23)')
-    ax1.set_ylabel('Average Hires')
-    ax1.set_xticks(hour_data['hour_of_day'][::2])  # Show labels every 2 hours
-    ax1.grid(axis='y', linestyle='--', alpha=0.7)
-    
-    # Embed Chart 1 into the Tkinter frame using FigureCanvasTkAgg.
-    canvas1 = FigureCanvasTkAgg(fig1, master=chart_frame)
-    canvas_widget1 = canvas1.get_tk_widget()
-    canvas_widget1.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+    # Create a 1x3 grid of subplots for better visualization
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5)) 
 
-    # --- Chart 2: Total Hires by Day of Week ---
-    fig2, ax2 = plt.subplots(figsize=(6, 4))
-    
+    # --- Chart 1 (Left): Total Hires by Day of Week ---
+    ax1 = axes[0]
     day_data = results['chart_data_day']
-    ax2.bar(day_data['day_of_week'], day_data['hires'], color='#4CAF50')
-    
-    ax2.set_title('Total Hires by Day of Week', fontsize=12)
-    ax2.set_xlabel('Day of Week')
-    ax2.set_ylabel('Total Hires')
-    ax2.tick_params(axis='x', rotation=45)  # Rotate labels to prevent overlap
+    ax1.bar(day_data['day_of_week'], day_data['hires'], color='#4CAF50')
+    ax1.set_title('Total Hires by Day of Week', fontsize=12)
+    ax1.set_xlabel('Day of Week')
+    ax1.set_ylabel('Total Hires')
+    ax1.tick_params(axis='x', rotation=45) 
+    ax1.grid(axis='y', linestyle='--', alpha=0.7)
+
+    # --- Chart 2 (Center): Average Hires by Hour of Day ---
+    ax2 = axes[1]
+    hour_data = results['chart_data_hour']
+    ax2.bar(hour_data['hour_of_day'], hour_data['hires'], color='#007BFF')
+    ax2.set_title('Average Hires by Hour of Day', fontsize=12)
+    ax2.set_xlabel('Hour (0-23)')
+    ax2.set_ylabel('Average Hires')
+    ax2.set_xticks(hour_data['hour_of_day'][::3]) 
     ax2.grid(axis='y', linestyle='--', alpha=0.7)
+
+    # --- **NEW** Chart 3 (Right): Average Hires vs. Temperature ---
+    ax3 = axes[2]
+    temp_data = results['chart_data_temp']
     
-    # Embed Chart 2
-    canvas2 = FigureCanvasTkAgg(fig2, master=chart_frame)
-    canvas_widget2 = canvas2.get_tk_widget()
-    canvas_widget2.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+    # Plotting temperature as a scatter plot to show individual points and the trend
+    ax3.scatter(temp_data['temp_rounded'], temp_data['hires'], color='#FF5733', s=40, alpha=0.7)
+    
+    # Add a simple line plot to visualize the trend
+    ax3.plot(temp_data['temp_rounded'], temp_data['hires'], color='r', linestyle='--', linewidth=1) 
+    
+    ax3.set_title('Avg Hires vs. Temperature (°C)', fontsize=12)
+    ax3.set_xlabel('Temperature (°C)')
+    ax3.set_ylabel('Average Hires')
+    ax3.grid(axis='both', linestyle='--', alpha=0.7)
+
+    # Embed the entire figure (containing all 3 charts) into the Tkinter frame
+    canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+    canvas_widget = canvas.get_tk_widget()
+    canvas_widget.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
     
     plt.tight_layout() # Adjust subplot parameters for a tight layout
 
@@ -216,7 +215,7 @@ class RMSAnalysisApp:
         """Initializes the main application window and all its widgets."""
         self.master = master
         master.title("RMS Data Analysis Tool")
-        master.geometry("1000x800") 
+        master.geometry("1200x850") # Increased size to fit 3 charts
         master.configure(bg='#f0f0f0')
         
         # Store default file paths.
@@ -234,7 +233,7 @@ class RMSAnalysisApp:
         # Header/Title frame
         header_frame = tk.Frame(master, bg='#f0f0f0')
         header_frame.pack(pady=10, fill='x', padx=20)
-        tk.Label(header_frame, text="RMS Bike Hire & Weather Analysis", font=font_title, bg='#f0f0f0', fg='#333').pack()
+        tk.Label(header_frame, text="RMS Bike Hire & Weather Analysis (Enhanced)", font=font_title, bg='#f0f0f0', fg='#333').pack()
         
         # Frame for file selection buttons and labels
         file_frame = tk.Frame(master, padx=10, pady=10, bg='#fff', relief=tk.RIDGE, bd=2)
@@ -271,7 +270,7 @@ class RMSAnalysisApp:
         self.analyze_button.pack(padx=20, pady=10, fill='x')
 
         # Frame where Matplotlib charts will be embedded.
-        tk.Label(master, text="Visual Analysis:", font=font_main, bg='#f0f0f0', fg='#333').pack(pady=(5, 0), padx=20, anchor='w')
+        tk.Label(master, text="Visual Analysis (Day, Hour, and Temperature Impact):", font=font_main, bg='#f0f0f0', fg='#333').pack(pady=(5, 0), padx=20, anchor='w')
         self.chart_frame = tk.Frame(master, bg='#fff', relief=tk.SUNKEN, bd=1)
         self.chart_frame.pack(padx=20, pady=5, fill='both', expand=True)
 
@@ -333,11 +332,11 @@ class RMSAnalysisApp:
             
             # Re-enable the button and show success message.
             self.analyze_button.config(state=tk.NORMAL, text="3. Run Analysis")
-            messagebox.showinfo("Success", "Analysis and Charts completed successfully!")
+            messagebox.showinfo("Success", "Enhanced analysis and three charts completed successfully!")
 
         except Exception as e:
             # Handle any error that occurred during loading or analysis.
-            error_message = f"\n--- Analysis FAILED ---\n\nError: {e}\n\nPlease verify file integrity and column names (timestamp, hires, conditions, etc.). Note: Excel files may require the 'openpyxl' library."
+            error_message = f"\n--- Analysis FAILED ---\n\nError: {e}\n\nPlease verify file integrity and column names (timestamp, hires, conditions, temp_c, etc.). Note: Excel files may require the 'openpyxl' library."
             self.result_text.config(state=tk.NORMAL)
             self.result_text.insert(tk.END, error_message)
             self.result_text.config(state=tk.DISABLED)
@@ -345,11 +344,11 @@ class RMSAnalysisApp:
             messagebox.showerror("Error", "Analysis failed. Check the report for details.")
 
     def _format_results(self, results: Dict[str, Any]) -> str:
-        """Formats the analysis results (from the dictionary) into a readable string report."""
+        """Formats the analysis results (from the dictionary) into a readable string report, including weather integration."""
         
         report = ""
         report += "="*50 + "\n"
-        report += "RMS DATA ANALYSIS REPORT\n"
+        report += "RMS DATA ANALYSIS REPORT (ENHANCED)\n"
         report += "="*50 + "\n\n"
 
         # 1. Peak Demand by Day
@@ -358,21 +357,27 @@ class RMSAnalysisApp:
         
         # 2. Peak Demand by Hour
         report += "[2. Peak Demand by Hour]\n"
-        report += f"Peak Demand Hour: **{results['peak_hour']:02d}:00** (Avg Hires: {results['peak_hour_avg']:.2f})\n\n" # :02d ensures 9 becomes 09
+        report += f"Peak Demand Hour: **{results['peak_hour']:02d}:00** (Avg Hires: {results['peak_hour_avg']:.2f})\n\n" 
         
-        # 3. Weather Correlation
-        report += "[3. Weather Correlation]\n"
+        # 3. Weather Condition Impact
+        report += "[3. Weather Condition Impact]\n"
         report += f"Best Weather Condition for Hires: **{results['best_condition']}** (Avg Hires: {results['best_condition_avg']:.2f})\n"
         
         report += "\n--- Demand by Condition (Top 5) ---\n"
         # Display the top 5 weather conditions for easy reference.
         for item in results['weather_demand'][:5]:
-            report += f"  - {item['conditions']:<20}: {item['hires']:.2f} Avg Hires\n" # :<20 formats the condition string to be left-aligned in 20 spaces
+            report += f"  - {item['conditions']:<20}: {item['hires']:.2f} Avg Hires\n" 
 
+        # **4. NEW: Temperature Impact**
+        report += "\n[4. Temperature Impact]\n"
+        report += f"Optimal Temperature Range Peak: **{results['peak_temp']}°C** (Avg Hires: {results['peak_temp_avg']:.2f})\n\n"
+        
         report += "\n" + "="*50 + "\n"
-        report += "Actionable Insight:\n"
-        report += f"The visualization clearly shows a strong preference for bike hires during the early evening peak ({results['peak_hour']:02d}:00) and on {results['peak_day']}.\n"
-        report += f"Resource allocation should focus heavily on these periods, especially when the forecast calls for **{results['best_condition']}** weather.\n"
+        report += "Actionable Insight: Resource Allocation Strategy\n"
+        report += "="*50 + "\n"
+        report += f"The analysis reveals demand peaks sharply during the **{results['peak_hour']:02d}:00** hour and on **{results['peak_day']}**.\n"
+        report += f"The new weather analysis indicates a clear preference for riding in **{results['best_condition']}** weather and when the temperature is around **{results['peak_temp']}°C**.\n"
+        report += "Resource allocation (bike redistribution and maintenance teams) should be maximized during the confluence of these factors to minimize stock-outs and maximize revenue.\n"
         
         return report
 
