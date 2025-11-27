@@ -388,4 +388,4 @@ if __name__ == "__main__":
     # Create an instance of the main application class.
     app = RMSAnalysisApp(root, HIRES_FILE, WEATHER_FILE)
     # Start the Tkinter event loop, which keeps the window open and interactive.
-    root.mainloop()
+    root.mainloop()`1
