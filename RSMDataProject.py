@@ -7,7 +7,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os 
 
 
-# --- THEME DEFINITIONS (NO CHANGE) ---
+# --- THEME DEFINITIONS ---
 LIGHT_THEME = {
     'bg_main': '#f0f0f0', 'bg_frame': '#ffffff', 'fg_text': '#333333', 
     'bg_input': '#e8e8e8', 'btn_main': '#007BFF', 'btn_run': '#4CAF50', 
@@ -21,72 +21,65 @@ DARK_THEME = {
 }
 
 
-# --- 1. CORE DATA ANALYSIS FUNCTION (REVISED FOR CSV ONLY) ---
+# --- 1. CORE DATA ANALYSIS FUNCTION ---
 
 def load_data(file_path: str, timestamp_col: str, **kwargs) -> pd.DataFrame:
-    """Loads data from CSV only."""
+    """Loads data supporting both CSV and Excel."""
     if not file_path:
         raise FileNotFoundError("File path is empty.")
-    
     ext = os.path.splitext(file_path)[1].lower()
-
-    # --- CHANGE: Only CSV is supported ---
     if ext == '.csv':
-        # Use low_memory=False to prevent mixed type warnings on large files
-        df = pd.read_csv(file_path, parse_dates=[timestamp_col], **kwargs, low_memory=False)
+        df = pd.read_csv(file_path, parse_dates=[timestamp_col], **kwargs, low_memory=False) 
+    elif ext == '.xlsx':
+        df = pd.read_excel(file_path, parse_dates=[timestamp_col], **kwargs, engine='openpyxl')
     else:
-        # This should ideally not be reached since the file dialog is restricted
-        raise ValueError(f"Unsupported file type: {ext}. Please use .csv.")
-        
+        raise ValueError(f"Unsupported file type: {ext}. Please use .csv or .xlsx.")
     return df
 
 def run_rms_analysis(hires_file_path: str, weather_file_path: str) -> Dict[str, Any]:
-    """The main analysis pipeline."""
     try:
-        # Load and clean hires data
-        df_hires = load_data(
-            hires_file_path,
-            timestamp_col='timestamp',
-            dtype={'station_id': str, 'hires': float} 
-        )
+        df_hires = load_data(hires_file_path, timestamp_col='timestamp', dtype={'station_id': str, 'hires': float})
         df_hires['hires'] = pd.to_numeric(df_hires['hires'], errors='coerce').astype('Int64')
-
-        # Load and clean weather data
-        df_weather = load_data(
-            weather_file_path,
-            timestamp_col='timestamp'
-        )
-        # ... (rest of the run_rms_analysis logic remains the same) ...
+        df_weather = load_data(weather_file_path, timestamp_col='timestamp')
         df_weather['temp_c'] = pd.to_numeric(df_weather['temp_c'], errors='coerce')
         df_weather['conditions'] = df_weather['conditions'].astype(str).str.strip()
-
     except Exception as e:
-        # Updated error message to reflect CSV-only format
-        raise Exception(f"Error loading files. Check file format (must be CSV), column names, or data types. Details: {e}")
-
-
-    # --- Data Cleaning, Merge, Feature Engineering, and Analysis ---
+        raise Exception(f"Error loading files. Details: {e}")
+    
+    # Data Cleaning and Preparation
     df_weather = df_weather[(df_weather['temp_c'] >= -50) & (df_weather['temp_c'] <= 50)]
     df_hires.dropna(subset=['hires'], inplace=True)
     df_weather.dropna(subset=['temp_c'], inplace=True)
     df_hires['timestamp'] = df_hires['timestamp'].dt.floor('H')
     df_weather['timestamp'] = df_weather['timestamp'].dt.floor('H')
+    
     df_merged = pd.merge(df_hires, df_weather, on='timestamp', how='inner')
     
     if df_merged.empty:
-        raise Exception("Merged DataFrame is empty. Ensure 'timestamp' columns match exactly (same hour/minute) in both files.")
+        raise Exception("Merged DataFrame is empty.")
+
+    # --- FIX IMPLEMENTED HERE: Create the 'date' column for correct grouping ---
+    df_merged['date'] = df_merged['timestamp'].dt.normalize() 
+    # --------------------------------------------------------------------------
 
     df_merged['day_of_week'] = df_merged['timestamp'].dt.day_name() 
     df_merged['hour_of_day'] = df_merged['timestamp'].dt.hour       
+    
+    # Analysis Calculations
     daily_demand = df_merged.groupby('date')['hires'].sum().reset_index()
-    daily_demand['day_of_week'] = pd.to_datetime(daily_demand['date']).dt.day_name()
+    daily_demand['day_of_week'] = daily_demand['date'].dt.day_name()
+    
     day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    
     peak_day_summary = daily_demand.groupby('day_of_week')['hires'].sum().reindex(day_order).fillna(0).reset_index()
     peak_day_result = peak_day_summary.loc[peak_day_summary['hires'].idxmax()]
+    
     peak_hour_summary = df_merged.groupby('hour_of_day')['hires'].mean().reset_index()
     peak_hour_result = peak_hour_summary.loc[peak_hour_summary['hires'].idxmax()]
+    
     weather_demand = df_merged.groupby('conditions')['hires'].mean().reset_index().sort_values(by='hires', ascending=False)
     best_condition_result = weather_demand.iloc[0]
+    
     df_merged['temp_rounded'] = df_merged['temp_c'].round().astype(int)
     temp_demand = df_merged.groupby('temp_rounded')['hires'].mean().reset_index()
     peak_temp_result = temp_demand.loc[temp_demand['hires'].idxmax()]
@@ -101,10 +94,9 @@ def run_rms_analysis(hires_file_path: str, weather_file_path: str) -> Dict[str, 
     }
     return results
 
-# --- 2. CHARTING FUNCTION (NO CHANGE) ---
+# --- 2. CHARTING FUNCTION ---
 
 def create_charts(results: Dict[str, Any], chart_frame: tk.Frame, is_dark_mode: bool):
-    # ... (Charting logic remains the same) ...
     for widget in chart_frame.winfo_children():
         widget.destroy()
 
@@ -159,7 +151,7 @@ def create_charts(results: Dict[str, Any], chart_frame: tk.Frame, is_dark_mode: 
     plt.tight_layout() 
 
 
-# --- 3. GUI APPLICATION CLASS (Tkinter) (REVISED) ---
+# --- 3. GUI APPLICATION CLASS ---
 
 class RMSAnalysisApp:
     def __init__(self, master, default_hires_file, default_weather_file):
@@ -168,7 +160,6 @@ class RMSAnalysisApp:
         master.title("RMS Data Analysis Tool")
         master.geometry("1200x850")
         
-        # --- CHANGE 1: Default files are empty strings, so the button starts disabled ---
         self.hires_file = ""
         self.weather_file = ""
         
@@ -177,10 +168,10 @@ class RMSAnalysisApp:
         
         self.font_main = ('Helvetica', 12)
         self.font_title = ('Helvetica', 18, 'bold')
-        
-        # --- CHANGE 2: Restrict file types to CSV only ---
         self.file_types = [
+            ("Data files (CSV/Excel)", "*.csv *.xlsx"),
             ("CSV files", "*.csv"), 
+            ("Excel files", "*.xlsx"), 
             ("All files", "*.*")
         ]
         
@@ -202,25 +193,26 @@ class RMSAnalysisApp:
         self.file_frame.pack(padx=20, pady=5, fill='x')
 
         # Hires File Widgets
-        tk.Label(self.file_frame, text="1. Bike Hires File (CSV Only):", font=self.font_main).grid(row=0, column=0, sticky='w', padx=5)
-        # Displaying a helpful prompt until a file is selected
-        self.hires_label = tk.Label(self.file_frame, text="Selected: None", fg='red', anchor='w')
+        tk.Label(self.file_frame, text="1. Bike Hires File (CSV/Excel):", font=self.font_main).grid(row=0, column=0, sticky='w', padx=5)
+        # Initial state: Red "None" text
+        self.hires_label = tk.Label(self.file_frame, text="Selected: None", fg='red', anchor='w') 
         self.hires_label.grid(row=1, column=0, sticky='ew', padx=5)
         self.hires_btn = tk.Button(self.file_frame, text="Browse Hires", command=self.select_hires_file, font=self.font_main, fg='white')
         self.hires_btn.grid(row=1, column=1, padx=5)
 
         # Weather File Widgets
-        tk.Label(self.file_frame, text="2. Weather File (CSV Only):", font=self.font_main).grid(row=2, column=0, sticky='w', pady=(10, 0), padx=5)
-        self.weather_label = tk.Label(self.file_frame, text="Selected: None", fg='red', anchor='w')
+        tk.Label(self.file_frame, text="2. Weather File (CSV/Excel):", font=self.font_main).grid(row=2, column=0, sticky='w', pady=(10, 0), padx=5)
+        # Initial state: Red "None" text
+        self.weather_label = tk.Label(self.file_frame, text="Selected: None", fg='red', anchor='w') 
         self.weather_label.grid(row=3, column=0, sticky='ew', padx=5)
         self.weather_btn = tk.Button(self.file_frame, text="Browse Weather", command=self.select_weather_file, font=self.font_main, fg='white')
         self.weather_btn.grid(row=3, column=1, padx=5)
 
         self.file_frame.grid_columnconfigure(0, weight=1)
 
-        # --- CHANGE 3: Run Button starts disabled ---
+        # Run Button starts disabled
         self.analyze_button = tk.Button(master, text="3. Run Analysis", command=self.run_analysis_gui, 
-                                        font=('Helvetica', 14, 'bold'), fg='white', relief=tk.RAISED, state=tk.DISABLED)
+                                        font=('Helvetica', 14, 'bold'), fg='white', relief=tk.RAISED, state=tk.DISABLED) 
         self.analyze_button.pack(padx=20, pady=10, fill='x')
 
         # --- Setup Tabbed Output Area ---
@@ -249,41 +241,40 @@ class RMSAnalysisApp:
             self.analyze_button.config(state=tk.DISABLED)
 
     def select_hires_file(self):
-        """Opens the file dialog and updates the button state."""
         filepath = filedialog.askopenfilename(defaultextension=".csv", filetypes=self.file_types)
         if filepath:
             self.hires_file = filepath
             filename = os.path.basename(filepath)
-            self.hires_label.config(text=f"Selected: {filename}", fg='green')
+            self.hires_label.config(text=f"Selected: {filename}", fg='green') 
         else:
-            # If the user cancels the dialog, ensure the state is checked
-            self.hires_label.config(text="Selected: None", fg='red')
+            if not self.hires_file:
+                self.hires_label.config(text="Selected: None", fg='red') 
             
         self.check_ready_to_run()
 
     def select_weather_file(self):
-        """Opens the file dialog and updates the button state."""
         filepath = filedialog.askopenfilename(defaultextension=".csv", filetypes=self.file_types)
         if filepath:
             self.weather_file = filepath
             filename = os.path.basename(filepath)
-            self.weather_label.config(text=f"Selected: {filename}", fg='green')
+            self.weather_label.config(text=f"Selected: {filename}", fg='green') 
         else:
-            self.weather_label.config(text="Selected: None", fg='red')
+            if not self.weather_file:
+                self.weather_label.config(text="Selected: None", fg='red') 
             
         self.check_ready_to_run()
 
 
-    # --- Remaining helper methods (toggle_mode, apply_theme, _format_results) ---
-
     def configure_ttk_style_dark(self):
+        """Configures ttk widgets for a dark theme."""
         self.style.configure('TNotebook', background=DARK_THEME['bg_main'], borderwidth=0, bordercolor=DARK_THEME['bg_main'], tabmargins=[2, 5, 2, 0])
-        self.style.configure('TNotebook.Tab', background=DARK_THEME['bg_frame'], foreground=DARK_THEME['fg_text'], padding=[10, 5])
+        self.style.configure('TNotebook.Tab', background=DARK_THEME['bg_frame'], foreground=DARK_THEME['fg_text'], padding=[10, 5],)
         self.style.map('TNotebook.Tab', background=[('selected', DARK_THEME['bg_main'])], foreground=[('selected', DARK_THEME['fg_text'])], expand=[('selected', [1, 1, 1, 0])])
         self.style.configure('TFrame', background=DARK_THEME['bg_main'])
 
 
     def configure_ttk_style_light(self):
+        """Configures ttk widgets for a light theme."""
         self.style.configure('TNotebook', background=LIGHT_THEME['bg_main'], borderwidth=0, bordercolor=LIGHT_THEME['bg_main'], tabmargins=[2, 5, 2, 0])
         self.style.configure('TNotebook.Tab', background=LIGHT_THEME['bg_frame'], foreground=LIGHT_THEME['fg_text'], padding=[10, 5])
         self.style.map('TNotebook.Tab', background=[('selected', LIGHT_THEME['bg_main'])], foreground=[('selected', LIGHT_THEME['fg_text'])], expand=[('selected', [1, 1, 1, 0])])
@@ -291,15 +282,18 @@ class RMSAnalysisApp:
 
 
     def apply_theme(self, theme: Dict[str, str]):
+        """Applies the colors from the given theme dictionary to all widgets."""
         if self.is_dark_mode:
             self.configure_ttk_style_dark()
         else:
             self.configure_ttk_style_light()
         
+        # 1. Root Window and tk.Frame widgets
         self.master.configure(bg=theme['bg_main'])
         self.file_frame.config(bg=theme['bg_frame'])
         self.chart_frame.config(bg=theme['bg_frame'])
 
+        # 2. Labels and Headings
         label_widgets = []
         for parent in [self.master, self.file_frame]:
              for child in parent.winfo_children():
@@ -312,22 +306,26 @@ class RMSAnalysisApp:
 
         for label in label_widgets:
             bg_color = theme['bg_frame'] if label.master == self.file_frame else theme['bg_main']
-            # Preserve the red/green status color for the path labels
             if label not in [self.hires_label, self.weather_label]:
                  label.config(bg=bg_color, fg=theme['fg_text'])
             else:
                  # Update background but keep original status foreground color (red/green)
-                 label.config(bg=theme['bg_frame'])
+                 label.config(bg=theme['bg_frame']) 
         
+        # 3. Buttons (Standard Tk Buttons)
         for btn in [self.hires_btn, self.weather_btn]:
             btn.config(bg=theme['btn_main'], fg=theme['btn_text'], activebackground=theme['bg_input'])
         
         self.analyze_button.config(bg=theme['btn_run'], fg=theme['btn_text'], activebackground=theme['bg_input'])
+        
         self.toggle_button.config(bg=theme['bg_main'], fg=theme['fg_text'], activebackground=theme['bg_input'])
 
+        # 4. ScrolledText Report Area
         self.result_text.config(bg=theme['bg_input'], fg=theme['fg_text'], insertbackground=theme['fg_text'])
 
     def toggle_mode(self):
+        """Switches between dark and light themes."""
+        
         if self.is_dark_mode:
             self.current_theme = LIGHT_THEME
             self.is_dark_mode = False
@@ -339,6 +337,7 @@ class RMSAnalysisApp:
             
         self.apply_theme(self.current_theme)
         
+        # Re-render charts to update their colors if an analysis has already been run
         if self.analyze_button['text'] == "3. Run Analysis":
              try:
                 self.run_analysis_gui(update_charts_only=True)
@@ -346,6 +345,8 @@ class RMSAnalysisApp:
                 pass 
                 
     def run_analysis_gui(self, update_charts_only=False):
+        """The main GUI method called when the 'Run Analysis' button is pressed."""
+        
         if not update_charts_only:
             self.result_text.config(state=tk.NORMAL)
             self.result_text.delete(1.0, tk.END)
@@ -381,6 +382,8 @@ class RMSAnalysisApp:
                 messagebox.showerror("Error", "Analysis failed. Check the 'Detailed Report' tab for error specifics.")
 
     def _format_results(self, results: Dict[str, Any]) -> str:
+        """Formats the analysis results into a readable string report."""
+        
         report = "="*50 + "\n"
         report += "RMS DATA ANALYSIS REPORT (ENHANCED)\n"
         report += "="*50 + "\n\n"
@@ -404,11 +407,10 @@ class RMSAnalysisApp:
         
         return report
 
-# --- 4. Main Execution (Placeholder files are now ignored) ---
+# --- 4. Main Execution ---
 
 if __name__ == "__main__":
-    # We no longer need to pass the actual file names here, as the button starts disabled.
-    # The initial placeholder text "Selected: None" will be displayed.
+    # Start with empty strings to keep the 'Run Analysis' button disabled initially
     HIRES_FILE = '' 
     WEATHER_FILE = ''
 
